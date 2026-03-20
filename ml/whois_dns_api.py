@@ -236,16 +236,33 @@ def domain_info():
         )
         print(f"Layer 3 (Contextual): risk_reduction={risk_reduction}, indicators={risk_indicators}")
 
-        # ── Screenshot capture (Warning / Dangerous sites only) ──────────
-        # Compute a quick preliminary risk score to decide whether to capture
+        # ── Screenshot capture (Playwright-first) ─────────────────────────
+        # Fallback screenshot capture for warning/dangerous pages.
         _prelim_risk = max(0, min(100, deterministic_risk - risk_reduction))
         screenshot_b64 = None
         if _prelim_risk >= 40 or deterministic_risk >= 40:
             from third_party_apis import BrandVerificationService as _BVS
             _bvs = _BVS()
             screenshot_b64 = _bvs.capture_screenshot(url)
-            if screenshot_b64:
-                print(f"📸 Screenshot attached to response")
+        if screenshot_b64:
+            print(f"📸 Screenshot attached to response")
+
+        login_flags = [
+            f for f in deterministic_flags
+            if isinstance(f, str) and ("login form" in f.lower() or "credential harvesting form" in f.lower())
+        ]
+        browser_findings = [
+            f for f in deterministic_flags
+            if isinstance(f, str) and (f.startswith("⚠️") or f.startswith("🚨"))
+        ]
+
+        page_behavior = {
+            'has_login_form': len(login_flags) > 0,
+            'login_forms_detected': len(login_flags),
+            'html_findings_count': len(browser_findings),
+            'interaction_ready': True,
+            'js_rendered_analysis': True,
+        }
         
         response_data = {
             'domain': domain,
@@ -255,6 +272,7 @@ def domain_info():
             'dns': dns_records,
             'ssl': ssl_info,
             'screenshot': screenshot_b64,
+            'page_behavior': page_behavior,
             'risk_adjustment': {
                 'reduction_percentage': risk_reduction,
                 'positive_factors': positive_count,

@@ -13,10 +13,20 @@ def apply_deterministic_rules(url, domain):
     """
     Layer 1: Deterministic phishing detection rules
     Uses REAL-TIME third-party verification APIs (NOT hardcoded)
-    Returns: (risk_increase, flags)
+    Returns: (risk_increase, flags, page_analysis)
     """
     risk_increase = 0
     flags = []
+    page_analysis = {
+        'phishing_score': 0,
+        'findings': [],
+        'playwright_used': False,
+        'interaction_steps': [],
+        'login_form_detected': False,
+        'login_form_count': 0,
+        'malicious_html_snippets': [],
+        'rendered_html_excerpt': None,
+    }
     
     # LAYER 0: PhishTank/URLhaus verification - DEFINITIVE SOURCE
     # If PhishTank confirms it's phishing, that's 100% certain (2.2M+ verified URLs)
@@ -27,7 +37,7 @@ def apply_deterministic_rules(url, domain):
         risk_increase = 100  # Force 100% risk - this is confirmed phishing
         flags.append(f"🚨 {threat_info}")
         print(f"🚨 DEFINITIVE: PhishTank/URLhaus confirmed phishing - forcing 100% risk")
-        return risk_increase, flags
+        return risk_increase, flags, page_analysis
 
     # LAYER 0b: Bank / financial brand impersonation check
     is_impersonating, legit_domain_imp, brand_display_name = brand_service.check_brand_impersonation(url, domain)
@@ -39,7 +49,7 @@ def apply_deterministic_rules(url, domain):
             f"(legitimate site: {legit_domain_imp})"
         )
         print(f"🚨 BRAND IMPERSONATION: {domain} → {brand_display_name} ({legit_domain_imp})")
-        return risk_increase, flags
+        return risk_increase, flags, page_analysis
 
     # IP-based URL
     if re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', domain):
@@ -172,8 +182,9 @@ def apply_deterministic_rules(url, domain):
     html_analysis = brand_service.analyze_html_content(url)
     risk_increase += html_analysis['phishing_score']
     flags.extend(html_analysis['findings'])
+    page_analysis = html_analysis
     
-    return risk_increase, flags
+    return risk_increase, flags, page_analysis
 
 
 def calculate_contextual_risk_adjustment(whois_info, dns_records, ssl_info):

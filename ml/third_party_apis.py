@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 # ---------------------------------------------------------------------------
 # Authoritative brand registry
 # Each entry: brand_keyword -> (official_domain, display_name, category)
+# The keyword is the core word a phisher would embed in a fake domain.
 # ---------------------------------------------------------------------------
 BRAND_REGISTRY: Dict[str, Tuple[str, str, str]] = {
     # ── Philippine domestic banks ──────────────────────────────────────────
@@ -57,7 +58,7 @@ BRAND_REGISTRY: Dict[str, Tuple[str, str, str]] = {
     "shopeepay":        ("shopee.ph",            "ShopeePay",                            "PH E-Wallet"),
     "instapay":         ("instapay.ph",          "InstaPay",                             "PH E-Wallet"),
     "pesonet":          ("pesonet.ph",           "PESONet",                              "PH E-Wallet"),
-    # ── Well-known global websites ────────────────────────────────────────
+    # ── Well-known global websites ─────────────────────────────────────────
     "google":           ("google.com",           "Google",                               "Tech"),
     "gmail":            ("gmail.com",            "Gmail",                                "Tech"),
     "youtube":          ("youtube.com",          "YouTube",                              "Tech"),
@@ -78,6 +79,8 @@ BRAND_REGISTRY: Dict[str, Tuple[str, str, str]] = {
     "shopee":           ("shopee.ph",            "Shopee Philippines",                   "PH E-Commerce"),
 }
 
+# Aliases and alternative keywords that should map to the same brand.
+# Attackers often drop or truncate brand names.
 BRAND_KEYWORD_ALIASES: Dict[str, str] = {
     # PH Banks
     "ph-bdo": "bdo", "bdoonline": "bdo", "bdo-online": "bdo", "mybdo": "bdo",
@@ -137,17 +140,34 @@ class BrandVerificationService:
     def check_brand_impersonation(self, url: str, domain: str) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Detect whether a domain is impersonating a known bank or financial brand.
+
         Returns: (is_impersonating, legitimate_domain, display_name)
+          - is_impersonating : True if the domain looks like a fake
+          - legitimate_domain: the real domain being impersonated, or None
+          - display_name     : human-readable brand name, or None
         """
-        clean = domain.lower().replace("www.", "").split(":")[0]
+        # Strip subdomains: "secure.bdo-login.com" → work on "bdo-login.com"
+        # Also strip www.
+        clean = domain.lower().replace("www.", "")
+        # Remove port if present
+        clean = clean.split(":")[0]
+
+        # Split into registrable domain parts (last two labels)
         parts = clean.split(".")
         registrable = ".".join(parts[-2:]) if len(parts) >= 2 else clean
+        # Full domain without TLD for keyword scanning
         domain_no_tld = re.sub(r"\.[a-z]{2,}(\.[a-z]{2})?$", "", clean)
-        slug = re.sub(r"[^a-z0-9]", "", domain_no_tld)
 
+        # ── Step 1: Build a normalised slug from the domain (strip hyphens/numbers) ──
+        slug = re.sub(r"[^a-z0-9]", "", domain_no_tld)          # e.g. "bdosecurelogin"
+        slug_hyphenated = domain_no_tld.replace(" ", "").replace(".", "")  # keep hyphens stripped
+
+        # ── Step 2: Resolve any aliases to canonical brand keys ──
         all_keywords = {**{k: k for k in BRAND_REGISTRY}, **BRAND_KEYWORD_ALIASES}
+
         matched_brand_key: Optional[str] = None
 
+        # 2a. Exact keyword appears as a whole token in the domain (hyphen/dot split)
         domain_tokens = re.split(r"[-.]", domain_no_tld)
         for token in domain_tokens:
             if token in all_keywords:
@@ -156,7 +176,10 @@ class BrandVerificationService:
                 if matched_brand_key:
                     break
 
+        # 2b. Keyword is a substring of the slug (e.g. "bdoonline", "metrobankph")
         if not matched_brand_key:
+            # Sort by length descending so longer keywords match before shorter ones
+            # (prevents "bank" matching before "unionbank")
             for kw in sorted(all_keywords.keys(), key=len, reverse=True):
                 if kw in slug:
                     resolved = all_keywords[kw]
@@ -168,6 +191,9 @@ class BrandVerificationService:
             return False, None, None
 
         legit_domain, display_name, category = BRAND_REGISTRY[matched_brand_key]
+
+        # ── Step 3: Is this the ACTUAL legitimate domain? ──
+        # Accept exact match or "www." prefix of the legitimate domain
         legit_parts = legit_domain.split(".")
         legit_registrable = ".".join(legit_parts[-2:]) if len(legit_parts) >= 2 else legit_domain
 
@@ -175,6 +201,7 @@ class BrandVerificationService:
             print(f"✅ {domain} is the legitimate {display_name} domain")
             return False, None, None
 
+        # ── Step 4: Confirmed impersonation ──
         print(f"🚨 BRAND IMPERSONATION: {domain} impersonates {display_name} (legit: {legit_domain})")
         return True, legit_domain, display_name
 
@@ -243,7 +270,7 @@ class BrandVerificationService:
         """
         # Common brand names and their legitimate domains
         brands = {
-            # ── Philippine domestic banks ─────────────────────────────────
+            # ── PH domestic banks ─────────────────────────────────────────
             'bdo': 'bdo.com.ph', 'landbank': 'landbank.com', 'bpi': 'bpi.com.ph',
             'metrobank': 'metrobank.com.ph', 'chinabank': 'chinabank.ph',
             'rcbc': 'rcbc.com', 'securitybank': 'securitybank.com',
@@ -252,7 +279,7 @@ class BrandVerificationService:
             'pbcom': 'pbcom.com.ph', 'philtrustbank': 'philtrustbank.com',
             'bankcom': 'bankcom.com.ph', 'veteransbank': 'veteransbank.com.ph',
             'psbank': 'psbank.com.ph', 'robinsonsbank': 'robinsonsbank.com.ph',
-            # ── Philippine digital banks / e-wallets ──────────────────────
+            # ── PH digital banks / e-wallets ──────────────────────────────
             'gcash': 'gcash.com', 'maya': 'maya.ph', 'mayabank': 'mayabank.ph',
             'paymaya': 'paymaya.com', 'coins': 'coins.ph',
             'tonikbank': 'tonikbank.com', 'gotyme': 'gotyme.com.ph',
@@ -555,64 +582,65 @@ class BrandVerificationService:
 
     def analyze_html_content(self, url: str) -> Dict:
         """
-        Fetch and analyze actual HTML content in REAL-TIME
-        Detect phishing indicators by analyzing page structure and content
+        Fetch and analyze rendered HTML content in real-time using Playwright.
+        Includes DOM extraction, login-form detection, safe page interactions,
+        and screenshot capture for downstream brand/AI checks.
         """
         print(f"📄 Analyzing HTML content from: {url}")
-        
+
+        indicators = {
+            'phishing_score': 0,
+            'findings': [],
+            'has_login_form': False,
+            'login_forms_detected': 0,
+            'screenshot': None,
+        }
+
         try:
-            response = requests.get(
-                url, 
-                timeout=10, 
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-            )
-            
+            page_data = self._fetch_page_with_playwright(url)
+            html = page_data.get('html', '')
+            indicators['screenshot'] = page_data.get('screenshot')
+            indicators['has_login_form'] = bool(page_data.get('has_login_form', False))
+            indicators['login_forms_detected'] = int(page_data.get('login_forms_detected', 0))
+
+            playwright_findings = page_data.get('findings', [])
+            if isinstance(playwright_findings, list):
+                indicators['findings'].extend(playwright_findings)
+
+            if isinstance(page_data.get('phishing_score'), int):
+                indicators['phishing_score'] += int(page_data['phishing_score'])
+
+            if not html:
+                indicators['findings'].append("Could not retrieve rendered page HTML for analysis")
+                return indicators
+
             from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            indicators = {
-                'phishing_score': 0,
-                'findings': []
-            }
-            
-            # Check 1: Suspicious login forms & credential harvesting
-            # Phishing pages almost always contain credential-harvesting forms:
-            #   - <input type="password">  → credential theft
-            #   - <form action="external"> → data exfiltration to attacker server
+            soup = BeautifulSoup(html, 'html.parser')
+
             CREDENTIAL_FIELD_NAMES = {
                 'user', 'username', 'email', 'login', 'account', 'userid',
                 'card', 'cardnumber', 'card-number', 'cvv', 'otp', 'pin',
                 'phone', 'mobile', 'id-number', 'account-number', 'accountno',
             }
+            
             forms = soup.find_all('form')
             password_fields_total = len(soup.find_all('input', {'type': 'password'}))
-
             for form in forms:
-                action     = form.get('action', '').strip()
-                method     = form.get('method', 'get').lower()
-                inputs     = form.find_all('input')
+                action = form.get('action', '').strip()
+                method = form.get('method', 'get').lower()
+                inputs = form.find_all('input')
                 input_types = [inp.get('type', 'text').lower() for inp in inputs]
                 input_names = [inp.get('name', inp.get('id', '')).lower() for inp in inputs]
 
-                has_password       = 'password' in input_types
+                has_password = 'password' in input_types
                 is_external_action = action.startswith('http') and not self._is_same_domain(url, action)
-                credential_fields  = [n for n in input_names
-                                      if any(c in n for c in CREDENTIAL_FIELD_NAMES)]
-                # autocomplete="off" on password field is a well-known phishing fingerprint
-                pwd_autocomplete_off = any(
-                    inp.get('autocomplete', '').lower() in ('off', 'new-password')
-                    for inp in inputs if inp.get('type', '').lower() == 'password'
-                )
+                credential_fields = [n for n in input_names if any(c in n for c in CREDENTIAL_FIELD_NAMES)]
 
                 if has_password and is_external_action:
-                    # Classic credential harvesting
                     indicators['phishing_score'] += 40
                     indicators['findings'].append(
                         f"🚨 Credential harvesting form: password field submits to external server: {action}"
                     )
-                    print(f"  🚨 CREDENTIAL HARVEST: password → {action}")
                 elif has_password:
                     indicators['phishing_score'] += 20
                     field_desc = (f" ({len(credential_fields)} credential field(s) detected)"
@@ -620,24 +648,16 @@ class BrandVerificationService:
                     indicators['findings'].append(
                         f"🚨 Suspicious login form: <input type=\"password\"> present{field_desc}"
                     )
-                    print(f"  🚨 SUSPICIOUS LOGIN FORM: password field detected")
-                elif is_external_action:
+                elif is_external_action and method == 'post':
                     indicators['phishing_score'] += 20
                     indicators['findings'].append(
-                        f"⚠️ Form submits data to external domain: {action}"
-                    )
-                    print(f"  ⚠️ External form action: {action}")
-
-                if has_password and pwd_autocomplete_off:
-                    indicators['phishing_score'] += 10
-                    indicators['findings'].append(
-                        "⚠️ Password field has autocomplete disabled — common phishing indicator"
+                        f"⚠️ Form submits data to external domain via POST: {action}"
                     )
 
             if password_fields_total > 1:
                 indicators['phishing_score'] += 10
                 indicators['findings'].append(
-                    f"⚠️ Multiple password fields detected ({password_fields_total}) — may be fake re-login page"
+                    f"⚠️ Multiple password fields detected ({password_fields_total}) - may be fake re-login page"
                 )
             
             # Check 2: Hidden iframes (but whitelist legitimate analytics/tracking services)
@@ -686,8 +706,6 @@ class BrandVerificationService:
                 # If it's hidden but from a legitimate service, it's normal - don't flag
             
             # Check 3: Urgency language in page content
-            meta_desc = soup.find('meta', {'name': 'description'})
-            meta_title = soup.find('title')
             page_text = soup.get_text().lower()
             
             urgency_words = [
@@ -742,25 +760,185 @@ class BrandVerificationService:
                             print(f"  ⚠️ Cross-domain redirect: {redirect_url} (delay: {delay}s)")
                 # Internal redirects are normal (session management, etc.) - don't flag
             
+            script_text = "\n".join(
+                s.get_text(" ", strip=True) for s in soup.find_all('script') if s.get_text(strip=True)
+            ).lower()
+            suspicious_script_signatures = [
+                'document.write(unescape(',
+                'atob(',
+                'fromcharcode(',
+                'eval(',
+                'settimeout("',
+                'window.location.replace(',
+            ]
+            script_hits = [sig for sig in suspicious_script_signatures if sig in script_text]
+            if script_hits:
+                indicators['phishing_score'] += min(25, 8 * len(script_hits))
+                indicators['findings'].append(
+                    f"⚠️ Suspicious script patterns detected: {', '.join(script_hits[:3])}"
+                )
+
+            indicators['phishing_score'] = max(0, min(100, indicators['phishing_score']))
             print(f"  📊 Content analysis score: {indicators['phishing_score']}/100")
             return indicators
-            
-        except requests.exceptions.ConnectionError as e:
-            error_msg = "Cannot reach website - domain may not exist or server is offline"
-            print(f"  ❌ {error_msg}")
-            return {'phishing_score': 0, 'findings': [error_msg]}
-        except requests.exceptions.Timeout:
-            error_msg = "Page load took too long (timeout) - server may be unresponsive"
-            print(f"  ❌ {error_msg}")
-            return {'phishing_score': 0, 'findings': [error_msg]}
-        except requests.exceptions.RequestException as e:
-            error_msg = "Could not retrieve page content for analysis"
-            print(f"  ❌ {error_msg}: {type(e).__name__}")
-            return {'phishing_score': 0, 'findings': [error_msg]}
+
         except Exception as e:
             error_msg = f"Content analysis error: {type(e).__name__}"
             print(f"  ❌ {error_msg}")
-            return {'phishing_score': 0, 'findings': [error_msg]}
+            indicators['findings'].append(error_msg)
+            return indicators
+
+    def _get_playwright_launch_config(self) -> Dict[str, Optional[str]]:
+        """Resolve an executable path for Chromium in local and container environments."""
+        try:
+            from playwright.sync_api import sync_playwright  # noqa: F401
+        except ImportError:
+            return {'available': False, 'executable_path': None}
+
+        import glob
+        import shutil
+
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = '/app/.playwright'
+
+        headless_shell_glob = glob.glob(
+            '/app/.playwright/chromium_headless_shell-*/chrome-linux/headless_shell'
+        )
+        chromium_glob = glob.glob('/app/.playwright/chromium-*/chrome-linux/chrome')
+        system_chromium = shutil.which('chromium') or shutil.which('chromium-browser')
+
+        executable_path = None
+        if headless_shell_glob:
+            executable_path = headless_shell_glob[0]
+        elif chromium_glob:
+            executable_path = chromium_glob[0]
+        elif system_chromium:
+            executable_path = system_chromium
+
+        return {'available': True, 'executable_path': executable_path}
+
+    def _fetch_page_with_playwright(self, url: str) -> Dict:
+        """
+        Extract rendered HTML, detect login forms, interact with inputs,
+        wait for dynamic JS content, and capture a screenshot.
+        """
+        result = {
+            'html': '',
+            'phishing_score': 0,
+            'findings': [],
+            'has_login_form': False,
+            'login_forms_detected': 0,
+            'screenshot': None,
+        }
+
+        launch_cfg = self._get_playwright_launch_config()
+        if not launch_cfg.get('available'):
+            result['findings'].append('Playwright is not installed - browser analysis skipped')
+            return result
+
+        executable_path = launch_cfg.get('executable_path')
+        if not executable_path:
+            result['findings'].append('Chromium binary not found - browser analysis skipped')
+            return result
+
+        try:
+            from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    executable_path=executable_path,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-gpu',
+                    ],
+                )
+                page = browser.new_page(
+                    viewport={'width': 1366, 'height': 768},
+                    user_agent=(
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/120.0.0.0 Safari/537.36'
+                    )
+                )
+                page.set_default_timeout(15000)
+
+                try:
+                    page.goto(url, wait_until='domcontentloaded', timeout=15000)
+                    page.wait_for_timeout(1500)
+                except PlaywrightTimeout:
+                    result['findings'].append('Page load timeout - analyzing partial content')
+
+                login_probe = page.evaluate(
+                    """
+                    () => {
+                      const forms = Array.from(document.querySelectorAll('form'));
+                      let loginLikeForms = 0;
+                      for (const form of forms) {
+                        const hasPassword = !!form.querySelector('input[type="password"]');
+                        const hasIdentity = !!form.querySelector(
+                          'input[name*="user" i],input[name*="email" i],input[name*="login" i]'
+                        );
+                        if (hasPassword || hasIdentity) loginLikeForms += 1;
+                      }
+                      return {
+                        loginLikeForms,
+                        passwordFieldCount: document.querySelectorAll('input[type="password"]').length,
+                      };
+                    }
+                    """
+                )
+
+                login_forms_detected = int(login_probe.get('loginLikeForms', 0))
+                password_field_count = int(login_probe.get('passwordFieldCount', 0))
+                result['login_forms_detected'] = login_forms_detected
+                result['has_login_form'] = login_forms_detected > 0 or password_field_count > 0
+
+                try:
+                    page.click('body', timeout=2000)
+                except Exception:
+                    pass
+
+                try:
+                    identity_input = page.query_selector(
+                        'input[name*="user" i], input[name*="email" i], input[name*="login" i], input[type="text"]'
+                    )
+                    if identity_input:
+                        identity_input.click(timeout=2000)
+                        identity_input.type('smartshield_probe', delay=25)
+                        identity_input.press('Control+A')
+                        identity_input.press('Backspace')
+                except Exception:
+                    pass
+
+                try:
+                    password_input = page.query_selector('input[type="password"]')
+                    if password_input:
+                        password_input.click(timeout=2000)
+                        password_input.type('SmartShieldProbe123!', delay=20)
+                        password_input.press('Control+A')
+                        password_input.press('Backspace')
+                except Exception:
+                    pass
+
+                page.wait_for_timeout(1000)
+
+                if result['has_login_form']:
+                    result['phishing_score'] += 12
+                    result['findings'].append(
+                        f"⚠️ Playwright detected login-like forms ({login_forms_detected})"
+                    )
+
+                result['html'] = page.content()
+                png_bytes = page.screenshot(type='png', full_page=False)
+                result['screenshot'] = base64.b64encode(png_bytes).decode('utf-8')
+                browser.close()
+
+        except Exception as e:
+            result['findings'].append(f'Playwright analysis failed: {type(e).__name__}')
+
+        return result
 
     def _is_same_domain(self, url1: str, url2: str) -> bool:
         """Check if two URLs are from the same domain"""
@@ -772,86 +950,9 @@ class BrandVerificationService:
             return False
 
     def capture_screenshot(self, url: str) -> Optional[str]:
-        """
-        Capture a full-page screenshot of the URL using Playwright.
-        Returns a base64-encoded PNG string, or None if capture fails.
-        Only runs when playwright is installed (graceful fallback).
-        """
-        try:
-            from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-        except ImportError:
-            print("  ⚠️ Playwright not installed — screenshot skipped")
-            return None
-
-        import shutil
-        import glob
-
-        # Force-set (not setdefault) so we always override any inherited env value.
-        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = '/app/.playwright'
-
-        # Diagnostic: log what's actually on disk so Railway logs reveal the truth.
-        pw_root = '/app/.playwright'
-        if os.path.isdir(pw_root):
-            entries = os.listdir(pw_root)
-            print(f"  📂 {pw_root} contents: {entries}")
-        else:
-            print(f"  ⚠️ {pw_root} does NOT exist on this container")
-
-        # Prefer Playwright's own downloaded headless-shell; fall back to system Chromium.
-        headless_shell_glob = glob.glob(
-            '/app/.playwright/chromium_headless_shell-*/chrome-linux/headless_shell'
-        )
-        chromium_glob = glob.glob('/app/.playwright/chromium-*/chrome-linux/chrome')
-        system_chromium = shutil.which('chromium') or shutil.which('chromium-browser')
-
-        executable_path = None
-        if headless_shell_glob:
-            executable_path = headless_shell_glob[0]
-            print(f"  🟢 Using Playwright headless shell: {executable_path}")
-        elif chromium_glob:
-            executable_path = chromium_glob[0]
-            print(f"  🟢 Using Playwright chromium: {executable_path}")
-        elif system_chromium:
-            executable_path = system_chromium
-            print(f"  🟡 Falling back to system chromium: {executable_path}")
-        else:
-            print(f"  ❌ No Chromium binary found — screenshot skipped")
-            return None
-
-        print(f"📸 Capturing screenshot of: {url}")
-        try:
-            with sync_playwright() as p:
-                launch_args = [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                ]
-                browser = p.chromium.launch(
-                    headless=True,
-                    executable_path=executable_path,
-                    args=launch_args,
-                )
-                page = browser.new_page(
-                    viewport={'width': 1280, 'height': 800},
-                    user_agent=(
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                        'AppleWebKit/537.36 (KHTML, like Gecko) '
-                        'Chrome/120.0.0.0 Safari/537.36'
-                    )
-                )
-                page.set_default_timeout(15000)
-                try:
-                    page.goto(url, wait_until='domcontentloaded', timeout=15000)
-                    page.wait_for_timeout(2000)  # let dynamic content render
-                except PlaywrightTimeout:
-                    print(f"  ⚠️ Page load timeout — screenshot from partial load")
-
-                png_bytes = page.screenshot(type='png', full_page=False)
-                browser.close()
-                screenshot_b64 = base64.b64encode(png_bytes).decode('utf-8')
-                print(f"  ✅ Screenshot captured ({len(png_bytes)} bytes)")
-                return screenshot_b64
-        except Exception as e:
-            print(f"  ❌ Screenshot capture failed: {type(e).__name__}: {e}")
-            return None
+        """Capture a screenshot via Playwright for fallback screenshot-only flows."""
+        page_data = self._fetch_page_with_playwright(url)
+        screenshot = page_data.get('screenshot')
+        if isinstance(screenshot, str) and screenshot:
+            return screenshot
+        return None
