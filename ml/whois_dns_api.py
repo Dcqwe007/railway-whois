@@ -246,16 +246,32 @@ def domain_info():
         )
         print(f"Layer 3 (Contextual): risk_reduction={risk_reduction}, indicators={risk_indicators}")
 
-        # ── Screenshot capture (Playwright-first) ─────────────────────────
-        # Fallback screenshot capture for warning/dangerous pages.
-        _prelim_risk = max(0, min(100, deterministic_risk - risk_reduction))
+        # Capture a screenshot only for phishing-level outcomes so the scan page
+        # can show visual proof for dangerous detections.
+        critical_indicators = [
+            i for i in (risk_indicators or [])
+            if isinstance(i, str) and ("CRITICAL" in i or "🚨" in i)
+        ]
+        estimated_risk = 100 if critical_indicators else max(0, min(100, deterministic_risk - risk_reduction))
+        phishing_flags = [
+            f for f in deterministic_flags
+            if isinstance(f, str) and (
+                f.startswith("🚨")
+                or "PHISHING" in f.upper()
+                or "BRAND IMPERSONATION" in f.upper()
+            )
+        ]
+        phishing_detected = estimated_risk >= 70 or len(phishing_flags) > 0
+
         screenshot_b64 = None
-        if _prelim_risk >= 40 or deterministic_risk >= 40:
-            from third_party_apis import BrandVerificationService as _BVS
-            _bvs = _BVS()
-            screenshot_b64 = _bvs.capture_screenshot(url)
-        if screenshot_b64:
-            print(f"📸 Screenshot attached to response")
+        if phishing_detected:
+            try:
+                from third_party_apis import BrandVerificationService as _BVS
+                screenshot_b64 = _BVS().capture_screenshot(url)
+                if screenshot_b64:
+                    print("📸 Screenshot attached to phishing response")
+            except Exception as e:
+                print(f"Screenshot capture failed: {e}")
 
         login_flags = [
             f for f in deterministic_flags
@@ -270,10 +286,11 @@ def domain_info():
             'has_login_form': len(login_flags) > 0,
             'login_forms_detected': len(login_flags),
             'html_findings_count': len(browser_findings),
+            'findings': browser_findings[:8],
             'interaction_ready': True,
             'js_rendered_analysis': True,
         }
-        
+
         response_data = {
             'domain': domain,
             'original_url': original_url,
@@ -448,7 +465,7 @@ def reports():
                 'description': description,
                 'flag': flag
             }
-            
+
             result = supabase_request('POST', 'reports', report_data)
             
             if result is None:
