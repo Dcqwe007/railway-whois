@@ -227,7 +227,17 @@ def domain_info():
         # MULTI-LAYER RISK ASSESSMENT
         
         # Layer 1: Apply deterministic rules
-        deterministic_risk, deterministic_flags = apply_deterministic_rules(url, domain)
+        deterministic_result = apply_deterministic_rules(url, domain)
+        if isinstance(deterministic_result, (tuple, list)):
+            deterministic_risk = deterministic_result[0] if len(deterministic_result) > 0 else 0
+            deterministic_flags = deterministic_result[1] if len(deterministic_result) > 1 else []
+            if len(deterministic_result) > 2:
+                print(
+                    f"Layer 1 (Deterministic): received {len(deterministic_result)} values; using first two"
+                )
+        else:
+            deterministic_risk = 0
+            deterministic_flags = []
         print(f"Layer 1 (Deterministic): +{deterministic_risk}% risk, flags: {deterministic_flags}")
         
         # Layer 3: Calculate contextual risk adjustment

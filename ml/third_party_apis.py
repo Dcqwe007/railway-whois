@@ -181,6 +181,8 @@ class BrandVerificationService:
             # Sort by length descending so longer keywords match before shorter ones
             # (prevents "bank" matching before "unionbank")
             for kw in sorted(all_keywords.keys(), key=len, reverse=True):
+                if len(kw) < 3:
+                    continue
                 if kw in slug:
                     resolved = all_keywords[kw]
                     if resolved in BRAND_REGISTRY:
