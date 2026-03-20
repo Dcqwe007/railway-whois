@@ -265,13 +265,19 @@ def domain_info():
 
         screenshot_b64 = None
         if phishing_detected:
+            print(f"📸 Attempting screenshot capture (risk={estimated_risk}, phishing_flags={len(phishing_flags)})")
             try:
                 from third_party_apis import BrandVerificationService as _BVS
-                screenshot_b64 = _BVS().capture_screenshot(url)
-                if screenshot_b64:
-                    print("📸 Screenshot attached to phishing response")
+                bvs = _BVS()
+                screenshot_b64 = bvs.capture_screenshot(url)
+                if screenshot_b64 and len(screenshot_b64) > 100:
+                    print(f"✅ Screenshot successfully captured ({len(screenshot_b64)} bytes)")
+                else:
+                    print(f"⚠️ Screenshot empty or None (data={screenshot_b64 is not None})")
             except Exception as e:
-                print(f"Screenshot capture failed: {e}")
+                import traceback
+                print(f"❌ Screenshot capture failed: {type(e).__name__}: {str(e)}")
+                traceback.print_exc()
 
         login_flags = [
             f for f in deterministic_flags

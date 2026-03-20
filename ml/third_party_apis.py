@@ -261,7 +261,7 @@ class BrandVerificationService:
         print(f"❓ Could not verify domain ownership")
         return False, "unknown"
 
-    def _detect_typosquatting(self, domain: str) -> Tuple[str, str] or None:
+    def _detect_typosquatting(self, domain: str) -> Optional[Tuple[str, str]]:
         """
         Detect typosquatting attacks by finding similar legitimate domains
         Examples: 
@@ -953,8 +953,80 @@ class BrandVerificationService:
 
     def capture_screenshot(self, url: str) -> Optional[str]:
         """Capture a screenshot via Playwright for fallback screenshot-only flows."""
-        page_data = self._fetch_page_with_playwright(url)
-        screenshot = page_data.get('screenshot')
-        if isinstance(screenshot, str) and screenshot:
-            return screenshot
-        return None
+        print(f"🎯 Starting screenshot capture for: {url}")
+        try:
+            page_data = self._fetch_page_with_playwright(url)
+            screenshot = page_data.get('screenshot')
+            if isinstance(screenshot, str) and screenshot:
+                print(f"✅ Screenshot captured successfully ({len(screenshot)} bytes base64)")
+                return screenshot
+            else:
+                print(f"⚠️ Screenshot data missing or invalid from page_data")
+                # Fallback: Try direct Playwright screenshot
+                return self._capture_direct_screenshot(url)
+        except Exception as e:
+            print(f"❌ Screenshot capture failed: {type(e).__name__}: {str(e)}")
+            # Fallback: Try direct Playwright screenshot
+            try:
+                return self._capture_direct_screenshot(url)
+            except Exception as fallback_e:
+                print(f"❌ Fallback screenshot also failed: {type(fallback_e).__name__}")
+                return None
+
+    def _capture_direct_screenshot(self, url: str) -> Optional[str]:
+        """Direct screenshot capture without full HTML analysis."""
+        print(f"📸 Attempting direct screenshot capture for: {url}")
+        
+        launch_cfg = self._get_playwright_launch_config()
+        if not launch_cfg.get('available'):
+            print("  ⚠️ Playwright not available")
+            return None
+
+        executable_path = launch_cfg.get('executable_path')
+        if not executable_path:
+            print("  ⚠️ Chromium binary not found")
+            return None
+
+        try:
+            from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    executable_path=executable_path,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-gpu',
+                    ],
+                )
+                page = browser.new_page(
+                    viewport={'width': 1366, 'height': 768},
+                    user_agent=(
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/120.0.0.0 Safari/537.36'
+                    )
+                )
+                page.set_default_timeout(10000)
+
+                try:
+                    page.goto(url, wait_until='domcontentloaded', timeout=10000)
+                    page.wait_for_timeout(500)
+                except PlaywrightTimeout:
+                    print("  ⚠️ Page load timeout but proceeding with screenshot")
+                except Exception as e:
+                    print(f"  ⚠️ Navigation error: {type(e).__name__}")
+
+                # Capture full page for better coverage
+                png_bytes = page.screenshot(type='png', full_page=True)
+                screenshot_b64 = base64.b64encode(png_bytes).decode('utf-8')
+                browser.close()
+                
+                print(f"  ✅ Direct screenshot captured ({len(screenshot_b64)} bytes base64)")
+                return screenshot_b64
+
+        except Exception as e:
+            print(f"  ❌ Direct screenshot failed: {type(e).__name__}: {str(e)}")
+            return None
